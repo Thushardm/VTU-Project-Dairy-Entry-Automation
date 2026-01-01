@@ -7,7 +7,7 @@ STORE_URL = "https://vtuapi.internyet.in/api/v1/student/project-diaries/store"
 
 EMAIL = "your_email_id" 
 PASSWORD = "your_password"
-PROJECT_ID = 3311 
+PROJECT_ID = "your_project_id"  # Replace with your actual project ID (from the VTU portal using browser dev tools)
 
 # --- COMPLETE SKILL MAPPING ---
 SKILLS = {
