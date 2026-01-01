@@ -15,9 +15,7 @@ except ImportError:
 # --- CONFIGURATION ---
 LOGIN_URL = "https://vtuapi.internyet.in/api/v1/auth/login"
 STORE_URL = "https://vtuapi.internyet.in/api/v1/student/project-diaries/store"
-
-# REPLACED AS REQUESTED
-PROJECT_ID = "your_project_id"  # Replace with your actual project ID (from the VTU portal using browser dev tools)
+PROJECT_URL = "https://vtuapi.internyet.in/api/v1/student/projects/my-project"
 
 # --- COMPLETE SKILL MAPPING ---
 SKILLS = {
@@ -76,56 +74,95 @@ def get_skill_ids(skills_str):
     names = [s.strip() for s in str(skills_str).split(',')]
     return [SKILLS[name] for name in names if name in SKILLS]
 
+def get_project_id(session, headers):
+    """Retrieves the project ID from the API."""
+    try:
+        resp = session.get(PROJECT_URL, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get('success') and data.get('data'):
+            return str(data['data']['id'])
+        else:
+            print("Error: No project found for this user.")
+            sys.exit(1)
+    except Exception as e:
+        print(f"Error retrieving project ID: {e}")
+        sys.exit(1)
+
 def main():
     parser = argparse.ArgumentParser(description="VTU Project Diary Automator via CLI")
-    parser.add_argument("--email", required=True, help="Your portal login email")
-    parser.add_argument("--password", required=True, help="Your portal login password")
-    parser.add_argument("--file", required=True, help="Path to your Excel/CSV diary file")
+    parser.add_argument("-e", "--email", required=True, help="Your portal login email")
+    parser.add_argument("-p", "--password", required=True, help="Your portal login password")
+    parser.add_argument("-f", "--file", required=True, help="Path to your Excel/CSV diary file")
     args = parser.parse_args()
 
     # Load and validate data
     df = validate_and_load_file(args.file)
     print(f"Successfully loaded {len(df)} entries.")
 
-    session = requests.Session()
-
     # 1. Authentication
     try:
-        print("Logging in...")
-        auth_resp = session.post(LOGIN_URL, json={"email": args.email, "password": args.password})
-        auth_resp.raise_for_status()
-        token = auth_resp.json().get('token')
-        headers = {
-            "Authorization": f"Bearer {token}", 
-            "Content-Type": "application/json", 
-            "Accept": "application/json"
-        }
-        print("Authentication successful.")
-
-        # 2. Sequential Posting
-        
-        for idx, row in df.iterrows():
-            payload = {
-                "project_id": PROJECT_ID,
-                "date": str(row['date']).split(' ')[0], # Format YYYY-MM-DD
-                "description": str(row['description']),
-                "hours": float(row['hours']),
-                "links": "",
-                "blockers": str(row['blockers']) if not pd.isna(row['blockers']) else "",
-                "learnings": str(row['learnings']) if not pd.isna(row['learnings']) else "",
-                "mood_slider": 5,
-                "skill_ids": get_skill_ids(row['skills'])
+        with requests.Session() as session:
+            print("Logging in...")
+            auth_resp = session.post(LOGIN_URL, json={"email": args.email, "password": args.password})
+            auth_resp.raise_for_status()
+            token = auth_resp.json().get('token')
+            
+            if not token:
+                print("Error: Authentication failed - no token received.")
+                sys.exit(1)
+                
+            headers = {
+                "Authorization": f"Bearer {token}", 
+                "Content-Type": "application/json", 
+                "Accept": "application/json"
             }
+            print("Authentication successful.")
+            
+            # 2. Get Project ID
+            print("Retrieving project ID...")
+            project_id = get_project_id(session, headers)
+            print(f"Project ID retrieved: {project_id}")
 
-            print(f"[{idx+1}/{len(df)}] Posting entry for {payload['date']}...")
-            resp = session.post(STORE_URL, json=payload, headers=headers)
-            
-            if resp.status_code in [200, 201]:
-                print("  Status: Success")
-            else:
-                print(f"  Status: Failed ({resp.status_code}) - {resp.text}")
-            
-            time.sleep(1.5) # Anti-spam delay
+            # 3. Sequential Posting
+            success_count = 0
+            for idx, row in df.iterrows():
+                # Convert date to YYYY-MM-DD format (supports various input formats)
+                try:
+                    formatted_date = pd.to_datetime(row['date'], dayfirst=True).strftime('%Y-%m-%d')
+                except Exception as e:
+                    print(f"Skipping row {idx+1}: Invalid date format '{row['date']}'")
+                    continue
+
+                payload = {
+                    "project_id": project_id,
+                    "date": formatted_date,
+                    "description": str(row['description']),
+                    "hours": float(row['hours']),
+                    "links": "",
+                    "blockers": str(row['blockers']) if not pd.isna(row['blockers']) else "",
+                    "learnings": str(row['learnings']) if not pd.isna(row['learnings']) else "",
+                    "mood_slider": 5,
+                    "skill_ids": get_skill_ids(row['skills'])
+                }
+
+                print(f"[{idx+1}/{len(df)}] Posting entry for {formatted_date}...", end=" ")
+                
+                try:
+                    resp = session.post(STORE_URL, json=payload, headers=headers)
+                    
+                    if resp.status_code in [200, 201]:
+                        print("Success")
+                        success_count += 1
+                    else:
+                        print(f"Failed ({resp.status_code})")
+                except Exception as req_err:
+                    print(f"Error: {req_err}")
+                
+                time.sleep(1.5)
+
+            print(f"\n--- Upload Complete ---")
+            print(f"Successfully uploaded: {success_count}/{len(df)} entries")
 
     except Exception as e:
         print(f"Critical Error: {e}")
