@@ -17,7 +17,7 @@ LOGIN_URL = "https://vtuapi.internyet.in/api/v1/auth/login"
 STORE_URL = "https://vtuapi.internyet.in/api/v1/student/project-diaries/store"
 PROJECT_URL = "https://vtuapi.internyet.in/api/v1/student/projects/my-project"
 
-# --- COMPLETE SKILL MAPPING ---
+# ... (SKILLS mapping remains the same as your original script) ...
 SKILLS = {
     "JavaScript": "1", "PHP": "2", "Python": "3", "Laravel": "4", "CakePHP": "5",
     "WordPress": "6", "Flutter": "7", "FilamentPHP": "8", "React.js": "9", "Java": "10",
@@ -43,11 +43,9 @@ SKILLS = {
 }
 
 def validate_and_load_file(file_path):
-    """Loads CSV/Excel and ensures all required columns are present."""
     if not os.path.exists(file_path):
         print(f"Error: The file '{file_path}' does not exist.")
         sys.exit(1)
-
     try:
         if file_path.endswith('.csv'):
             df = pd.read_csv(file_path)
@@ -65,18 +63,16 @@ def validate_and_load_file(file_path):
     if missing:
         print(f"Error: Missing columns in file: {', '.join(missing)}")
         sys.exit(1)
-
     return df
 
 def get_skill_ids(skills_str):
-    """Maps a comma-separated string of skill names to their ID list."""
     if pd.isna(skills_str): return []
     names = [s.strip() for s in str(skills_str).split(',')]
     return [SKILLS[name] for name in names if name in SKILLS]
 
 def get_project_id(session, headers):
-    """Retrieves the project ID from the API."""
     try:
+        # Session object 'session' will automatically include cookies here
         resp = session.get(PROJECT_URL, headers=headers)
         resp.raise_for_status()
         data = resp.json()
@@ -90,47 +86,56 @@ def get_project_id(session, headers):
         sys.exit(1)
 
 def main():
-    parser = argparse.ArgumentParser(description="VTU Project Diary Automator via CLI")
+    parser = argparse.ArgumentParser(description="VTU Project Diary Automator (Session/Token Supported)")
     parser.add_argument("-e", "--email", required=True, help="Your portal login email")
     parser.add_argument("-p", "--password", required=True, help="Your portal login password")
     parser.add_argument("-f", "--file", required=True, help="Path to your Excel/CSV diary file")
     args = parser.parse_args()
 
-    # Load and validate data
     df = validate_and_load_file(args.file)
     print(f"Successfully loaded {len(df)} entries.")
 
-    # 1. Authentication
-    try:
-        with requests.Session() as session:
-            print("Logging in...")
+    # Use a requests.Session to maintain cookies automatically
+    with requests.Session() as session:
+        # Set common headers
+        session.headers.update({
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        })
+
+        # 1. Authentication
+        print("Logging in...")
+        try:
             auth_resp = session.post(LOGIN_URL, json={"email": args.email, "password": args.password})
             auth_resp.raise_for_status()
+            
+            # If the API returns a Bearer token, we use it. 
+            # If not, requests.Session has already saved the 'Session' cookies.
             token = auth_resp.json().get('token')
+            if token:
+                print("Bearer Token detected. Adding to headers.")
+                session.headers.update({"Authorization": f"Bearer {token}"})
+            else:
+                print("No Bearer Token found. Relying on Session Cookies.")
             
-            if not token:
-                print("Error: Authentication failed - no token received.")
-                sys.exit(1)
-                
-            headers = {
-                "Authorization": f"Bearer {token}", 
-                "Content-Type": "application/json", 
-                "Accept": "application/json"
-            }
-            print("Authentication successful.")
-            
+            # Check if we actually have cookies or a token
+            if not token and not session.cookies:
+                print("Warning: Neither token nor cookies were received. Login might have failed.")
+
+            print("Authentication complete.")
+
             # 2. Get Project ID
             print("Retrieving project ID...")
-            project_id = get_project_id(session, headers)
+            project_id = get_project_id(session, session.headers)
             print(f"Project ID retrieved: {project_id}")
 
             # 3. Sequential Posting
             success_count = 0
             for idx, row in df.iterrows():
-                # Convert date to YYYY-MM-DD format (supports various input formats)
                 try:
                     formatted_date = pd.to_datetime(row['date'], dayfirst=True).strftime('%Y-%m-%d')
-                except Exception as e:
+                except Exception:
                     print(f"Skipping row {idx+1}: Invalid date format '{row['date']}'")
                     continue
 
@@ -146,16 +151,15 @@ def main():
                     "skill_ids": get_skill_ids(row['skills'])
                 }
 
-                print(f"[{idx+1}/{len(df)}] Posting entry for {formatted_date}...", end=" ")
+                print(f"[{idx+1}/{len(df)}] Posting for {formatted_date}...", end=" ")
                 
                 try:
-                    resp = session.post(STORE_URL, json=payload, headers=headers)
-                    
+                    resp = session.post(STORE_URL, json=payload)
                     if resp.status_code in [200, 201]:
                         print("Success")
                         success_count += 1
                     else:
-                        print(f"Failed ({resp.status_code})")
+                        print(f"Failed ({resp.status_code}): {resp.text}")
                 except Exception as req_err:
                     print(f"Error: {req_err}")
                 
@@ -164,8 +168,8 @@ def main():
             print(f"\n--- Upload Complete ---")
             print(f"Successfully uploaded: {success_count}/{len(df)} entries")
 
-    except Exception as e:
-        print(f"Critical Error: {e}")
+        except Exception as e:
+            print(f"Critical Error: {e}")
 
 if __name__ == "__main__":
     main()
